@@ -58,7 +58,7 @@ bool DtaDevFreeBSDSata::init(const char * devref)
 
 /** Send an ioctl to the device using pass through. */
 uint8_t DtaDevFreeBSDSata::sendCmd(ATACOMMAND cmd, uint8_t protocol, uint16_t comID,
-                         void * buffer, uint16_t bufferlen)
+                         void * buffer, uint32_t bufferlen)
 {
 	union ccb ccb;
 
