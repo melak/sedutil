@@ -48,7 +48,7 @@ public:
     uint8_t sendCmd(ATACOMMAND cmd, uint8_t protocol, uint16_t comID,
             void * buffer, uint32_t bufferlen);
     /** A static class to scan for supported drives */
-    static int diskScan();
+    static int diskScan(uint8_t alt_output = 0);
 protected:
     /** OS specific command to Wait for specified number of milliseconds 
      * @param ms  number of milliseconds to wait
@@ -60,5 +60,7 @@ protected:
     unsigned long long getSize();
     int fd; /**< FreeBSD handle for the device  */
 private:
+    static void getDevStr(struct device_match_result *dev_result,
+		char *devstr, size_t devstr_len, uint8_t alt_output);
     DtaDevFreeBSDDrive *drive;
 };

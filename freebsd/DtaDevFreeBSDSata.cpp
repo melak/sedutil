@@ -1,5 +1,6 @@
 /* C:B**************************************************************************
 This software is Copyright 2016 Alexander Motin <mav@FreeBSD.org>
+This software is Copyright 2017 Spectra Logic Corporation
 
 This file is part of sedutil.
 
@@ -32,6 +33,7 @@ along with sedutil.  If not, see <http://www.gnu.org/licenses/>.
 #include <cam/scsi/scsi_pass.h>
 #include "DtaDevFreeBSDSata.h"
 #include "DtaHexDump.h"
+#include "DtaLexicon.h"
 
 using namespace std;
 
@@ -41,7 +43,7 @@ using namespace std;
 
 DtaDevFreeBSDSata::DtaDevFreeBSDSata()
 {
-	isSAS = 0;
+	dev_protocol = PROTO_UNSPECIFIED;
 }
 
 bool DtaDevFreeBSDSata::init(const char * devref)
@@ -63,7 +65,8 @@ uint8_t DtaDevFreeBSDSata::sendCmd(ATACOMMAND cmd, uint8_t protocol, uint16_t co
 	union ccb ccb;
 
 	bzero(&ccb, sizeof(ccb));
-	if(isSAS) {
+	switch (dev_protocol) {
+	case PROTO_SCSI:
 		cam_fill_csio(&ccb.csio, 1, NULL,
 		    (cmd == IF_RECV) ? CAM_DIR_IN : CAM_DIR_OUT,
 		    MSG_SIMPLE_Q_TAG, (u_int8_t*)buffer, bufferlen,
@@ -78,7 +81,8 @@ uint8_t DtaDevFreeBSDSata::sendCmd(ATACOMMAND cmd, uint8_t protocol, uint16_t co
 		ccb.csio.cdb_io.cdb_bytes[7] = (bufferlen/512) >> 16;
 		ccb.csio.cdb_io.cdb_bytes[8] = (bufferlen/512) >> 8;
 		ccb.csio.cdb_io.cdb_bytes[9] = (bufferlen/512);
-	} else {
+		break;
+	case PROTO_ATA:
 		cam_fill_ataio(&ccb.ataio, 0, NULL,
 		    (cmd == IF_RECV) ? CAM_DIR_IN : CAM_DIR_OUT,
 		    MSG_SIMPLE_Q_TAG, (u_int8_t*)buffer, bufferlen, 60 * 1000);
@@ -91,19 +95,43 @@ uint8_t DtaDevFreeBSDSata::sendCmd(ATACOMMAND cmd, uint8_t protocol, uint16_t co
 		ccb.ataio.cmd.lba_high = (comID & 0xff00) >> 8;
 		ccb.ataio.cmd.device = 0x40;
 		ccb.ataio.cmd.sector_count = bufferlen / 512;
+		break;
+#if (__FreeBSD_version >= 1200039)
+	/*
+	 * Note that the version here isn't presise.  NVMe support was
+	 * added to the pass(4) driver on 7/14/2017, and this particular
+	 * version is from 7/22/2017, when clang 5.0 was imported.
+	 */
+	case PROTO_NVME:
+		cam_fill_nvmeio(&ccb.nvmeio, 0, NULL,
+		    (cmd == IF_RECV) ?  CAM_DIR_IN : CAM_DIR_OUT,
+		    (uint8_t *)buffer, bufferlen, 60 * 1000);
+		if (cmd == IF_RECV)
+			ccb.nvmeio.cmd.opc = NVME_OPC_SECURITY_RECEIVE;
+		else
+			ccb.nvmeio.cmd.opc = NVME_OPC_SECURITY_SEND;
+		ccb.nvmeio.cmd.cdw10 = protocol << 24 | comID << 8;
+		ccb.nvmeio.cmd.cdw11 = bufferlen;
+		break;
+#endif
+	default:
+		LOG(E) << "Unknown drive protocol" << dev_protocol;
+		return (FAIL);
+		break; /*NOTREACHED*/
 	}
 
 	ccb.ccb_h.flags |= CAM_DEV_QFRZDIS;
 
 	if (cam_send_ccb(camdev, &ccb) < 0) {
 		LOG(D4) << "cam_send_ccb failed";
-		return (0xff);
+		return (FAIL);
 	}
 
 	if ((ccb.ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP) {
 		IFLOG(D4)
-			cam_error_print(camdev, &ccb, CAM_ESF_ALL, CAM_EPF_ALL, stderr);
-		return (0xff);
+			cam_error_print(camdev, &ccb, CAM_ESF_ALL,
+			    CAM_EPF_ALL, stderr);
+		return (FAIL);
 	}
 	return (0);
 }
@@ -135,25 +163,76 @@ void DtaDevFreeBSDSata::identify(OPAL_DiskInfo& disk_info)
 		return;
 	}
 
-	if (ccb.cgd.protocol == PROTO_SCSI) {
+	dev_protocol = ccb.cgd.protocol;
+
+	switch (dev_protocol) {
+	case PROTO_SCSI:
 		disk_info.devType = DEVICE_TYPE_SAS;
-		isSAS = 1;
 		safecopy(disk_info.serialNum, sizeof(disk_info.serialNum),
 		    (uint8_t *)ccb.cgd.serial_num, ccb.cgd.serial_num_len);
 		safecopy(disk_info.firmwareRev, sizeof(disk_info.firmwareRev),
-		    (uint8_t *)ccb.cgd.inq_data.revision, sizeof(ccb.cgd.inq_data.revision));
+		    (uint8_t *)ccb.cgd.inq_data.revision,
+		    sizeof(ccb.cgd.inq_data.revision));
 		safecopy(disk_info.modelNum, sizeof(disk_info.modelNum),
-		    (uint8_t *)ccb.cgd.inq_data.vendor, sizeof(ccb.cgd.inq_data.vendor) + sizeof(ccb.cgd.inq_data.product));
-	} else if (ccb.cgd.protocol == PROTO_ATA) {
+		    (uint8_t *)ccb.cgd.inq_data.vendor,
+		    sizeof(ccb.cgd.inq_data.vendor) +
+		    sizeof(ccb.cgd.inq_data.product));
+		break;
+	case PROTO_ATA:
 		disk_info.devType = DEVICE_TYPE_ATA;
 		safecopy(disk_info.serialNum, sizeof(disk_info.serialNum),
 		    (uint8_t *)ccb.cgd.serial_num, ccb.cgd.serial_num_len);
-		memcpy(disk_info.firmwareRev, ccb.cgd.ident_data.revision,
-		    sizeof(disk_info.firmwareRev));
-		memcpy(disk_info.modelNum, ccb.cgd.ident_data.model,
-		    sizeof(disk_info.modelNum));
-	} else {
+		safecopy(disk_info.firmwareRev, sizeof(disk_info.firmwareRev),
+		    ccb.cgd.ident_data.revision,
+		    sizeof(ccb.cgd.ident_data.revision));
+		safecopy(disk_info.modelNum, sizeof(disk_info.modelNum),
+		    ccb.cgd.ident_data.model, sizeof(ccb.cgd.ident_data.model));
+		break;
+#if (__FreeBSD_version >= 1200039)
+	/*
+	 * Note that the version here isn't presise.  NVMe support was
+	 * added to the pass(4) driver on 7/14/2017, and this particular
+	 * version is from 7/22/2017, when clang 5.0 was imported.
+	 */
+	case PROTO_NVME: {
+		struct nvme_controller_data cdata;
+
+		bzero(&cdata, sizeof(cdata));
+
+		bzero(&ccb, sizeof(ccb));
+		cam_fill_nvmeio(&ccb.nvmeio, 0, NULL,
+		    CAM_DIR_IN, (uint8_t *)&cdata, sizeof(cdata), 60 * 1000);
+		ccb.nvmeio.cmd.opc = NVME_OPC_IDENTIFY;
+		ccb.nvmeio.cmd.cdw10 = 1;
+
+		if (cam_send_ccb(camdev, &ccb) < 0) {
+			LOG(D4) << "cam_send_ccb failed";
+			disk_info.devType = DEVICE_TYPE_OTHER;
+			return;
+		}
+
+		if ((ccb.ccb_h.status & CAM_STATUS_MASK) != CAM_REQ_CMP) {
+			LOG(D4) << "cam_send_ccb error" << ccb.ccb_h.status;
+			IFLOG(D4)
+				cam_error_print(camdev, &ccb, CAM_ESF_ALL,
+				    CAM_EPF_ALL, stderr);
+			disk_info.devType = DEVICE_TYPE_OTHER;
+			return;
+		}
+
+		disk_info.devType = DEVICE_TYPE_NVME;
+		safecopy(disk_info.serialNum, sizeof(disk_info.serialNum),
+		    cdata.sn, sizeof (disk_info.serialNum));
+		safecopy(disk_info.firmwareRev, sizeof(disk_info.firmwareRev),
+		    cdata.fr, sizeof(cdata.fr));
+		safecopy(disk_info.modelNum, sizeof(disk_info.modelNum),
+		    cdata.mn, sizeof(cdata.mn));
+		break;
+	}
+#endif
+	default:
 		disk_info.devType = DEVICE_TYPE_OTHER;
+		break;
 	}
 }
 

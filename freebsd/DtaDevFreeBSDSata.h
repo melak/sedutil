@@ -52,5 +52,5 @@ public:
             void * buffer, uint32_t bufferlen);
     void identify(OPAL_DiskInfo& disk_info);
     struct cam_device *camdev;
-    int isSAS; /* The device is sas */
+    cam_proto dev_protocol;
 };
