@@ -103,7 +103,7 @@ uint8_t DtaDevFreeBSDSata::sendCmd(ATACOMMAND cmd, uint8_t protocol, uint16_t co
 	 * version is from 7/22/2017, when clang 5.0 was imported.
 	 */
 	case PROTO_NVME:
-		cam_fill_nvmeio(&ccb.nvmeio, 0, NULL,
+		cam_fill_nvmeadmin(&ccb.nvmeio, 0, NULL,
 		    (cmd == IF_RECV) ?  CAM_DIR_IN : CAM_DIR_OUT,
 		    (uint8_t *)buffer, bufferlen, 60 * 1000);
 		if (cmd == IF_RECV)
@@ -200,7 +200,7 @@ void DtaDevFreeBSDSata::identify(OPAL_DiskInfo& disk_info)
 		bzero(&cdata, sizeof(cdata));
 
 		bzero(&ccb, sizeof(ccb));
-		cam_fill_nvmeio(&ccb.nvmeio, 0, NULL,
+		cam_fill_nvmeadmin(&ccb.nvmeio, 0, NULL,
 		    CAM_DIR_IN, (uint8_t *)&cdata, sizeof(cdata), 60 * 1000);
 		ccb.nvmeio.cmd.opc = NVME_OPC_IDENTIFY;
 		ccb.nvmeio.cmd.cdw10 = 1;
