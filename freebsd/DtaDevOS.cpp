@@ -149,16 +149,55 @@ void DtaDevOS::getDevStr(struct device_match_result *dev_result,
 		sprintf(tmpstr, "<%s %s>", product, revision);
 		break;
 #if (__FreeBSD_version >= 1200038)
-	case PROTO_MMCSD:
-		if (strlen((char *)dev_result->mmc_ident_data.model) > 0) {
-			sprintf(tmpstr, "<%s>",
-			    dev_result->mmc_ident_data.model);
+	case PROTO_MMCSD: {
+		union ccb *ccb;
+		struct ccb_dev_advinfo *advi;
+		struct cam_device *dev;
+		struct mmc_params mmc_ident_data;
+
+		dev = cam_open_btl(dev_result->path_id, dev_result->target_id,
+		    dev_result->target_lun, O_RDWR, NULL);
+		if (dev == NULL) {
+			warnx("%s", cam_errbuf);
+			goto print_dev_mmcsd_out;
+		}
+
+		ccb = cam_getccb(dev);
+		if (ccb == NULL) {
+			warnx("couldn't allocate CCB");
+			cam_close_device(dev);
+			goto print_dev_mmcsd_out;
+		}
+
+		advi = &ccb->cdai;
+		advi->ccb_h.flags = CAM_DIR_IN;
+		advi->ccb_h.func_code = XPT_DEV_ADVINFO;
+		advi->flags = CDAI_FLAG_NONE;
+		advi->buftype = CDAI_TYPE_MMC_PARAMS;
+		advi->bufsiz = sizeof(struct mmc_params);
+		advi->buf = (uint8_t *)&mmc_ident_data;
+
+		if (cam_send_ccb(dev, ccb) < 0) {
+			warn("error sending XPT_DEV_ADVINFO CCB");
+			cam_freeccb(ccb);
+			cam_close_device(dev);
+			goto print_dev_mmcsd_out;
+		}
+
+		if (mmc_ident_data.model[0] > 0) {
+			sprintf(tmpstr, "<%s>", mmc_ident_data.model);
 		} else {
 			sprintf(tmpstr, "<%s card>",
-			    dev_result->mmc_ident_data.card_features &
+			    mmc_ident_data.card_features &
 			    CARD_FEATURE_SDIO ? "SDIO" : "unknown");
 		}
+
+		cam_freeccb(ccb);
+		cam_close_device(dev);
+
+print_dev_mmcsd_out:
 		break;
+	}
 #endif
 	case PROTO_SEMB: {
 		struct sep_identify_data *sid;
